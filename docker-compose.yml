@@ -1,0 +1,160 @@
+version: "3"
+
+services:
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: namenode
+    restart: always
+    ports:
+      - 9870:9870
+      - 9000:9000
+    volumes:
+      - hadoop_namenode:/hadoop/dfs/name
+      - ./data:/data        # <--- Mount data dari host ke /data di kontainer
+    environment:
+      - CLUSTER_NAME=test
+      - HADOOP_OPTS=-Djava.security.krb5.conf=invalid -Dhadoop.security.authentication=simple
+    env_file:
+      - ./hadoop.env
+    networks:
+      - hive-net
+
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode
+    restart: always
+    volumes:
+      - hadoop_datanode:/hadoop/dfs/data
+    environment:
+      SERVICE_PRECONDITION: "namenode:9870"
+    env_file:
+      - ./hadoop.env
+    networks:
+      - hive-net
+
+  resourcemanager:
+    image: bde2020/hadoop-resourcemanager:2.0.0-hadoop3.2.1-java8
+    container_name: resourcemanager
+    restart: always
+    ports:
+      - "8088:8088"
+    environment:
+      SERVICE_PRECONDITION: "namenode:9000 namenode:9870 datanode:9864"
+    env_file:
+      - ./hadoop.env
+    networks:
+      - hive-net
+
+  nodemanager:
+    image: bde2020/hadoop-nodemanager:2.0.0-hadoop3.2.1-java8
+    container_name: nodemanager
+    restart: always
+    environment:
+      SERVICE_PRECONDITION: "namenode:9000 namenode:9870 datanode:9864 resourcemanager:8088"
+    env_file:
+      - ./hadoop.env
+    networks:
+      - hive-net
+
+  historyserver:
+    image: bde2020/hadoop-historyserver:2.0.0-hadoop3.2.1-java8
+    container_name: historyserver
+    restart: always
+    volumes:
+      - hadoop_historyserver:/hadoop/yarn/timeline
+    environment:
+      SERVICE_PRECONDITION: "namenode:9000 namenode:9870 datanode:9864 resourcemanager:8088"
+    env_file:
+      - ./hadoop.env
+    networks:
+      - hive-net
+
+  metastore:
+    image: bde2020/hive-metastore-postgresql:2.3.0
+    container_name: metastore
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: metastore
+      POSTGRES_USER: hive
+      POSTGRES_PASSWORD: hive
+    networks:
+      - hive-net
+
+  hive-server:
+    image: bde2020/hive:2.3.2-postgresql-metastore
+    container_name: hive-server
+    restart: always
+    depends_on:
+      - metastore
+    ports:
+      - "10000:10000"
+    command: /opt/hive/bin/hiveserver2
+    environment:
+      HIVE_CORE_CONF_javax_jdo_option_ConnectionURL: "jdbc:postgresql://metastore:5432/metastore"
+      HIVE_CORE_CONF_javax_jdo_option_ConnectionDriverName: "org.postgresql.Driver"
+      HIVE_CORE_CONF_javax_jdo_option_ConnectionUserName: "hive"
+      HIVE_CORE_CONF_javax_jdo_option_ConnectionPassword: "hive"
+      SERVICE_PRECONDITION: "metastore:5432"
+      HIVE_METASTORE_RUN: "true"
+      HIVE_SERVER2_THRIFT_PORT: "10000"
+      HIVE_SERVER2_ENABLE_DOAS: "false"
+    env_file:
+      - ./hadoop.env
+    volumes:
+      - ./data:/data
+      - ./scripts:/scripts
+      - ./conf/hive-site.xml:/opt/hive/conf/hive-site.xml
+    networks:
+      - hive-net
+
+  spark-master:
+    image: bde2020/spark-master:2.4.0-hadoop2.7
+    container_name: spark-master
+    user: "root"
+    environment:
+      - SPARK_MODE=master
+      - HADOOP_USER_NAME=root
+      - HADOOP_CONF_DIR=/opt/spark/conf
+      - SPARK_CLASSPATH=/opt/spark/conf
+      - HADOOP_OPTS=-Djava.security.krb5.conf=invalid -Dhadoop.security.authentication=simple
+      - HOME=/tmp
+      - SPARK_LOCAL_DIRS=/tmp
+    ports:
+      - "7077:7077"
+      - "8080:8080"
+    networks:
+      - hive-net
+    volumes:
+      - ./scripts:/scripts
+      - ./conf/core-site.xml:/opt/spark/conf/core-site.xml
+      - ./conf/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf
+
+  spark-worker:
+    image: bde2020/spark-worker:2.4.0-hadoop2.7
+    container_name: spark-worker
+    user: "root"
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - HADOOP_CONF_DIR=/opt/spark/conf
+      - SPARK_CLASSPATH=/opt/spark/conf
+      - HADOOP_OPTS=-Djava.security.krb5.conf=invalid -Dhadoop.security.authentication=simple
+      - HOME=/tmp
+      - SPARK_LOCAL_DIRS=/tmp
+    volumes:
+      - ./scripts:/scripts
+      - ./conf/core-site.xml:/opt/spark/conf/core-site.xml
+      - ./conf/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf
+    networks:
+      - hive-net
+
+volumes:
+  hadoop_namenode:
+  hadoop_datanode:
+  hadoop_historyserver:
+
+networks:
+  hive-net:
+    driver: bridge
